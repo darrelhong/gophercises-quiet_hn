@@ -33,14 +33,14 @@ func main() {
 func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		stories, err := getTopStories(numStories)
+		stories, err := getCachedStories(numStories)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		data := templateData{
 			Stories: stories,
-			Time:    time.Now().Sub(start),
+			Time:    time.Since(start),
 		}
 		err = tpl.Execute(w, data)
 		if err != nil {
@@ -50,11 +50,30 @@ func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 	})
 }
 
+var (
+	cacheStories []item
+	cacheExpiry  time.Time
+)
+
+func getCachedStories(numStories int) ([]item, error) {
+	if time.Since(cacheExpiry) < 0 {
+		return cacheStories, nil
+	}
+
+	stories, err := getTopStories(numStories)
+	if err != nil {
+		return nil, err
+	}
+	cacheStories = stories
+	cacheExpiry = time.Now().Add(15 * time.Second)
+	return cacheStories, nil
+}
+
 func getTopStories(numStories int) ([]item, error) {
 	var client hn.Client
 	ids, err := client.TopItems()
 	if err != nil {
-		return nil, errors.New("Failed to load top stories")
+		return nil, errors.New("failed to load top stories")
 	}
 	var stories []item
 	at := 0
