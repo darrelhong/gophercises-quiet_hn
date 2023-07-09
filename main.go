@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gophercises/quiet_hn/hn"
@@ -31,9 +32,30 @@ func main() {
 }
 
 func handler(numStories int, tpl *template.Template) http.HandlerFunc {
+	sc := storyCache{
+		numStories: numStories,
+		duration:   3 * time.Second,
+	}
+
+	go func() {
+		interval := time.NewTicker(1 * time.Second)
+		for {
+			tempSc := storyCache{
+				numStories: numStories,
+				duration:   3 * time.Second,
+			}
+			tempSc.get()
+			sc.mutex.Lock()
+			sc.cache = tempSc.cache
+			sc.expiry = tempSc.expiry
+			sc.mutex.Unlock()
+			<-interval.C
+		}
+	}()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		stories, err := getCachedStories(numStories)
+		stories, err := sc.get()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -50,23 +72,28 @@ func handler(numStories int, tpl *template.Template) http.HandlerFunc {
 	})
 }
 
-var (
-	cacheStories []item
-	cacheExpiry  time.Time
-)
+type storyCache struct {
+	numStories int
+	cache      []item
+	duration   time.Duration
+	expiry     time.Time
+	mutex      sync.Mutex
+}
 
-func getCachedStories(numStories int) ([]item, error) {
-	if time.Since(cacheExpiry) < 0 {
-		return cacheStories, nil
+func (sc *storyCache) get() ([]item, error) {
+	sc.mutex.Lock()
+	defer sc.mutex.Unlock()
+	if time.Since(sc.expiry) < 0 {
+		return sc.cache, nil
 	}
 
-	stories, err := getTopStories(numStories)
+	stories, err := getTopStories(sc.numStories)
 	if err != nil {
 		return nil, err
 	}
-	cacheStories = stories
-	cacheExpiry = time.Now().Add(15 * time.Second)
-	return cacheStories, nil
+	sc.cache = stories
+	sc.expiry = time.Now().Add(sc.duration)
+	return sc.cache, nil
 }
 
 func getTopStories(numStories int) ([]item, error) {
